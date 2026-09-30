@@ -26,17 +26,21 @@ esphome:
           if (!name.empty())
             id(clock_style).publish_state(name);
 
-# Colour pickers for the "Colour per Word" style (defaults as stock firmware).
+# Colour settings for the "Colour per Word" and "Matrix Rain" styles
+# (defaults as stock firmware).
 packages:
   hour_colour: !include
-    file: word_colour.yaml
-    vars: {id: hour_colour, name: Hour Colour, red: 100%, green: 0%, blue: 0%}
+    file: colour_select.yaml
+    vars: {id: hour_colour, name: Hour Colour, initial: Red}
   minute_colour: !include
-    file: word_colour.yaml
-    vars: {id: minute_colour, name: Minute Colour, red: 0%, green: 100%, blue: 0%}
+    file: colour_select.yaml
+    vars: {id: minute_colour, name: Minute Colour, initial: Green}
   past_to_colour: !include
-    file: word_colour.yaml
-    vars: {id: past_to_colour, name: Past & To Colour, red: 0%, green: 0%, blue: 100%}
+    file: colour_select.yaml
+    vars: {id: past_to_colour, name: Past & To Colour, initial: Blue}
+  rain_colour: !include
+    file: colour_select.yaml
+    vars: {id: rain_colour, name: Rain Colour, initial: Green}
 
 rp2:
   board: rpipico2w
@@ -146,13 +150,9 @@ light:
                 it[i] = wordclock::mask_bit(wordclock::kWifi, i) ? current_color : Color::BLACK;
               return;
             }
-            // Colour (scaled by its brightness) of a word colour picker light.
-            auto colour = [](light::LightState *picker) {
-              const auto &v = picker->remote_values;
-              if (!v.is_on())
-                return Color::BLACK;
-              float scale = 255.0f * v.get_brightness();
-              return Color(v.get_red() * scale, v.get_green() * scale, v.get_blue() * scale);
+            auto colour = [](select::Select *setting) {
+              auto c = wordclock::palette(setting->current_option().c_str());
+              return Color(c.r, c.g, c.b);
             };
             Color hour = colour(id(hour_colour));
             Color minute = colour(id(minute_colour));
@@ -190,6 +190,38 @@ light:
               auto c = wordclock::rainbow(i, offset);
               it[i] = lit ? Color(c.r, c.g, c.b) : Color::BLACK;
             }
+      - addressable_lambda:
+          name: Matrix Rain
+          update_interval: 20ms  # steps at the Rain Speed setting
+          lambda: |-
+            static wordclock::MatrixRain rain;
+            static uint32_t last_step = 0;
+            uint32_t now_ms = millis();
+            if (initial_run)
+              rain = wordclock::MatrixRain();
+            else if (now_ms - last_step < id(rain_speed).state)
+              return;
+            last_step = now_ms;
+            rain.advance([] { return random_uint32() % 100; }, static_cast<int>(id(rain_density).state),
+                         static_cast<int>(id(rain_trail_length).state));
+
+            auto now = id(clock_time).now();
+            wordclock::Face face;
+            if (now.is_valid())
+              face = wordclock::compose(now.hour, now.minute);
+            auto background = wordclock::palette(id(rain_colour).current_option().c_str());
+            // Words use the display's colour. As stock, they're capped at
+            // brightness level 3 (4/16) so they don't outshine the rain.
+            wordclock::Rgb word = {current_color.r, current_color.g, current_color.b};
+            int brightness = static_cast<int>(id(display)->current_values.get_brightness() * 1000.0f + 0.5f);
+            int cap = 1000 * 4 / 16;
+            int num = brightness > cap ? cap : 1;
+            int den = brightness > cap ? brightness : 1;
+            for (int i = 0; i < it.size(); i++) {
+              auto c = rain.render(i, face, background, word, word, word, id(rain_white_heads).state,
+                                   id(rain_over_words).state, num, den);
+              it[i] = Color(c.r, c.g, c.b);
+            }
 
 sensor:
   - platform: wifi_signal
@@ -225,6 +257,65 @@ text_sensor:
       snprintf(buf, sizeof(buf), "%c%02d:%02d", offset < 0 ? '-' : '+', abs(offset) / 60, abs(offset) % 60);
       return std::string(buf);
 
+number:
+  # Matrix Rain settings (defaults as stock firmware).
+  - platform: template
+    id: rain_speed
+    name: Rain Speed
+    icon: mdi:weather-pouring
+    entity_category: config
+    unit_of_measurement: ms
+    min_value: 40
+    max_value: 400
+    step: 10
+    initial_value: 120
+    optimistic: true
+    restore_value: true
+    setup_priority: -100
+  - platform: template
+    id: rain_density
+    name: Rain Density
+    icon: mdi:weather-pouring
+    entity_category: config
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 18
+    optimistic: true
+    restore_value: true
+    setup_priority: -100
+  - platform: template
+    id: rain_trail_length
+    name: Rain Trail Length
+    icon: mdi:weather-pouring
+    entity_category: config
+    min_value: 1
+    max_value: 8
+    step: 1
+    initial_value: 4
+    optimistic: true
+    restore_value: true
+    setup_priority: -100
+
+switch:
+  - platform: template
+    id: rain_white_heads
+    name: Rain White Heads
+    icon: mdi:weather-pouring
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    setup_priority: -100
+  - platform: template
+    id: rain_over_words
+    name: Rain Over Words
+    icon: mdi:weather-pouring
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    setup_priority: -100
+
 select:
   # Mirrors the display's effect, and remembers the choice while it's off.
   - platform: template
@@ -236,6 +327,7 @@ select:
       - Colour per Word
       - Rainbow
       - Rainbow Cycle
+      - Matrix Rain
     set_action:
       - lambda: |-
           auto *light = id(display);

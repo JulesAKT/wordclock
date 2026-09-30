@@ -9,8 +9,9 @@ MicroPython firmware so the clock is a native Home Assistant device.
 | Entity | Notes |
 | --- | --- |
 | `light.word_clock_display` | Real on/off (all LEDs dark), brightness, colour. Click the name (not the toggle) in HA for the brightness and colour controls. |
-| Clock Style (select) | **Word Clock** (the display's colour), **Colour per Word**, **Rainbow**, **Rainbow Cycle**. Same as the display's effect, but it can be changed while the display is off. |
-| Hour / Minute / Past & To Colour | Colour pickers for **Colour per Word** (shown as lights under Configuration). Their brightness scales that word group; turning one off hides it. |
+| Clock Style (select) | **Word Clock** (the display's colour), **Colour per Word**, **Rainbow**, **Rainbow Cycle**, **Matrix Rain**. Same as the display's effect, but it can be changed while the display is off. |
+| Hour / Minute / Past & To Colour | Named colours for **Colour per Word** (under Configuration). "Off" hides that word group. |
+| Rain Colour, Rain Speed, Rain Density, Rain Trail Length, Rain White Heads, Rain Over Words | **Matrix Rain** settings (under Configuration), with the stock defaults. The words use the display's colour and, as stock, are capped at the brightness of stock level 3 so they don't outshine the rain. |
 | Diagnostics | IP address, WiFi SSID, MAC, WiFi signal, uptime, internal temperature, ESPHome version, UTC offset |
 | Buttons | Restart, Safe Mode Boot |
 
@@ -24,8 +25,9 @@ and the display stays visible down to about 8%.
 
 Settings (on/off, brightness, colours, style) are saved to flash at most once
 a minute, so a change made just before a power cut can be lost. On the Pico,
-ESPHome stores saved settings by position, so a firmware update that adds or
-reorders saved entities resets them once.
+ESPHome stores saved settings by position in setup order, so a firmware
+update that adds or reorders saved entities can reset them once. New saved
+settings here use `setup_priority: -100` so they go after the existing ones.
 
 Turning the light off stops its effect (standard ESPHome behaviour); the
 firmware puts the last-used clock effect back as soon as the light is on again,
@@ -54,11 +56,13 @@ automation:
 
 - `wordclock.yaml` — the ESPHome device config. Tweak `substitutions` for the
   LED pin (27 on V2 kits and later, 2 on V1).
-- `word_colour.yaml` — package for one colour picker, used three times.
-- `wordclock.h` — the clock face: word masks and time → words logic, plain C++.
+- `colour_select.yaml` — package for one named-colour setting, used four times.
+- `wordclock.h` — the clock face (word masks, time → words), matrix rain and
+  colour palette, as plain C++.
 - `test/run.sh` — builds `wordclock.h` on your computer and checks it against
-  the original MicroPython firmware's own code for all 1440 minutes of the day
-  (and the rainbow palette). Needs git, python3 and a C++ compiler.
+  the original MicroPython firmware's own code: all 1440 minutes of the day,
+  the rainbow palette, and matrix rain frame by frame. Also checks the colour
+  options match the palette. Needs git, python3 and a C++ compiler.
 
 ## Installing
 

@@ -1,0 +1,29 @@
+# A named colour setting used by a clock style (e.g. one word group's colour).
+# Option names must match wordclock::kPalette in wordclock.h (test/run.sh
+# checks this); "Off" blacks out whatever it colours.
+#
+# vars: id, name, initial (an option below)
+
+select:
+  - platform: template
+    id: ${id}
+    name: ${name}
+    icon: mdi:palette
+    entity_category: config
+    options:
+      - Red
+      - Orange
+      - Yellow
+      - Green
+      - Cyan
+      - Blue
+      - Purple
+      - Pink
+      - White
+      - "Off"
+    initial_option: ${initial}
+    optimistic: true
+    restore_value: true
+    # Saved settings on the Pico are stored by position in setup order; go
+    # after the lights and globals so adding settings doesn't move theirs.
+    setup_priority: -100

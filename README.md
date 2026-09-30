@@ -8,14 +8,24 @@ MicroPython firmware so the clock is a native Home Assistant device.
 
 | Entity | Notes |
 | --- | --- |
-| `light.word_clock_display` | Real on/off (all LEDs dark), brightness, colour. The effect picks the clock style. |
-| Effects | **Word Clock** (light's colour), **Colour per Word**, **Rainbow**, **Rainbow Cycle** |
+| `light.word_clock_display` | Real on/off (all LEDs dark), brightness, colour. Click the name (not the toggle) in HA for the brightness and colour controls. |
+| Clock Style (select) | **Word Clock** (the display's colour), **Colour per Word**, **Rainbow**, **Rainbow Cycle**. Same as the display's effect, but it can be changed while the display is off. |
+| Hour / Minute / Past & To Colour | Colour pickers for **Colour per Word** (shown as lights under Configuration). Their brightness scales that word group; turning one off hides it. |
 | Diagnostics | IP address, WiFi SSID, MAC, WiFi signal, uptime, internal temperature, ESPHome version, UTC offset |
 | Buttons | Restart, Safe Mode Boot |
 
 Time and time zone come from Home Assistant, so daylight saving follows your
 HA settings; SNTP keeps the clock right if HA is unavailable. Until it has the
 time, the clock shows a WiFi symbol.
+
+Brightness uses the stock firmware's curve (gamma 2.2), so HA brightness
+(n + 1) / 16 looks like stock level n: 19% is the stock default (level 2),
+and the display stays visible down to about 8%.
+
+Settings (on/off, brightness, colours, style) are saved to flash at most once
+a minute, so a change made just before a power cut can be lost. On the Pico,
+ESPHome stores saved settings by position, so a firmware update that adds or
+reorders saved entities resets them once.
 
 Turning the light off stops its effect (standard ESPHome behaviour); the
 firmware puts the last-used clock effect back as soon as the light is on again,
@@ -43,7 +53,8 @@ automation:
 ## Files
 
 - `wordclock.yaml` — the ESPHome device config. Tweak `substitutions` for the
-  LED pin (27 on V2 kits and later, 2 on V1) and per-word colours.
+  LED pin (27 on V2 kits and later, 2 on V1).
+- `word_colour.yaml` — package for one colour picker, used three times.
 - `wordclock.h` — the clock face: word masks and time → words logic, plain C++.
 - `test/run.sh` — builds `wordclock.h` on your computer and checks it against
   the original MicroPython firmware's own code for all 1440 minutes of the day

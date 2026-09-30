@@ -1,17 +1,14 @@
 # ESPHome firmware for the GurgleApps colour word clock (Pico 2 W, 8x8 WS2812B).
 #
 # The clock face is drawn by light effects, so Home Assistant sees one light:
-# on/off, brightness and colour behave as you'd expect, and the effect picks
-# the clock style. Face logic lives in wordclock.h (tested in test/).
+# on/off, brightness and colour behave as you'd expect, and the effect (also
+# exposed as the "Clock Style" select) picks the clock style. Face logic lives
+# in wordclock.h (tested in test/).
 
 substitutions:
   name: wordclock
   friendly_name: Word Clock
   led_pin: GPIO27  # 27 on V2 kits and later, 2 on V1 kits
-  # "Colour per Word" effect colours, as R, G, B.
-  hour_color: "255, 0, 0"
-  minute_color: "0, 255, 0"
-  past_to_color: "0, 0, 255"
 
 esphome:
   name: ${name}
@@ -21,6 +18,25 @@ esphome:
   project:
     name: julesakt.wordclock
     version: "0.1.0"
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          auto name = id(display)->get_effect_name_by_index(id(clock_effect));
+          if (!name.empty())
+            id(clock_style).publish_state(name);
+
+# Colour pickers for the "Colour per Word" style (defaults as stock firmware).
+packages:
+  hour_colour: !include
+    file: word_colour.yaml
+    vars: {id: hour_colour, name: Hour Colour, red: 100%, green: 0%, blue: 0%}
+  minute_colour: !include
+    file: word_colour.yaml
+    vars: {id: minute_colour, name: Minute Colour, red: 0%, green: 100%, blue: 0%}
+  past_to_colour: !include
+    file: word_colour.yaml
+    vars: {id: past_to_colour, name: Past & To Colour, red: 0%, green: 0%, blue: 100%}
 
 rp2:
   board: rpipico2w
@@ -51,7 +67,11 @@ time:
   # so daylight saving follows HA. SNTP keeps time if HA is unavailable.
   - platform: homeassistant
     id: clock_time
+    on_time_sync:
+      - component.update: utc_offset
   - platform: sntp
+    on_time_sync:
+      - component.update: utc_offset
 
 globals:
   # Last clock effect chosen, so the clock face comes back after turn-off.
@@ -87,13 +107,23 @@ light:
     channel_colors: GRB
     chipset: WS2812B
     restore_mode: RESTORE_DEFAULT_ON
+    # Match the stock firmware's brightness curve, so HA brightness
+    # (n + 1) / 16 looks like stock level n (0-15).
+    gamma_correct: 2.2
+    initial_state:
+      # Without a colour mode, ESPHome skips the brightness at first boot.
+      color_mode: rgb
+      brightness: 19%  # stock default, level 2
     # A fade would run with the effect stopped, fading a solid panel.
     default_transition_length: 0s
     on_state:
       - lambda: |-
-          uint32_t effect = id(display)->get_current_effect_index();
-          if (effect != 0)
+          auto *light = id(display);
+          uint32_t effect = light->get_current_effect_index();
+          if (effect != 0) {
             id(clock_effect) = effect;
+            id(clock_style).publish_state(light->get_effect_name().c_str());
+          }
       - script.execute: ensure_clock_effect
     effects:
       - addressable_lambda:
@@ -116,12 +146,23 @@ light:
                 it[i] = wordclock::mask_bit(wordclock::kWifi, i) ? current_color : Color::BLACK;
               return;
             }
+            // Colour (scaled by its brightness) of a word colour picker light.
+            auto colour = [](light::LightState *picker) {
+              const auto &v = picker->remote_values;
+              if (!v.is_on())
+                return Color::BLACK;
+              float scale = 255.0f * v.get_brightness();
+              return Color(v.get_red() * scale, v.get_green() * scale, v.get_blue() * scale);
+            };
+            Color hour = colour(id(hour_colour));
+            Color minute = colour(id(minute_colour));
+            Color past_to = colour(id(past_to_colour));
             auto face = wordclock::compose(now.hour, now.minute);
             for (int i = 0; i < it.size(); i++) {
               switch (face.part(i)) {
-                case wordclock::Part::HOUR: it[i] = Color(${hour_color}); break;
-                case wordclock::Part::MINUTE: it[i] = Color(${minute_color}); break;
-                case wordclock::Part::PAST_TO: it[i] = Color(${past_to_color}); break;
+                case wordclock::Part::HOUR: it[i] = hour; break;
+                case wordclock::Part::MINUTE: it[i] = minute; break;
+                case wordclock::Part::PAST_TO: it[i] = past_to; break;
                 default: it[i] = Color::BLACK;
               }
             }
@@ -171,6 +212,7 @@ text_sensor:
     mac_address:
       name: MAC Address
   - platform: template
+    id: utc_offset
     name: UTC Offset
     icon: mdi:map-clock
     entity_category: diagnostic
@@ -182,6 +224,31 @@ text_sensor:
       char buf[8];
       snprintf(buf, sizeof(buf), "%c%02d:%02d", offset < 0 ? '-' : '+', abs(offset) / 60, abs(offset) % 60);
       return std::string(buf);
+
+select:
+  # Mirrors the display's effect, and remembers the choice while it's off.
+  - platform: template
+    id: clock_style
+    name: Clock Style
+    icon: mdi:palette-swatch
+    options:
+      - Word Clock
+      - Colour per Word
+      - Rainbow
+      - Rainbow Cycle
+    set_action:
+      - lambda: |-
+          auto *light = id(display);
+          uint32_t effect = light->get_effect_index(x.c_str(), x.size());
+          if (effect == 0)
+            return;
+          id(clock_effect) = effect;
+          id(clock_style).publish_state(x.c_str());
+          if (light->remote_values.is_on()) {
+            auto call = light->turn_on();
+            call.set_effect(effect);
+            call.perform();
+          }
 
 button:
   - platform: restart

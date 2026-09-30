@@ -1,0 +1,190 @@
+# ESPHome firmware for the GurgleApps colour word clock (Pico 2 W, 8x8 WS2812B).
+#
+# The clock face is drawn by light effects, so Home Assistant sees one light:
+# on/off, brightness and colour behave as you'd expect, and the effect picks
+# the clock style. Face logic lives in wordclock.h (tested in test/).
+
+substitutions:
+  name: wordclock
+  friendly_name: Word Clock
+  led_pin: GPIO27  # 27 on V2 kits and later, 2 on V1 kits
+  # "Colour per Word" effect colours, as R, G, B.
+  hour_color: "255, 0, 0"
+  minute_color: "0, 255, 0"
+  past_to_color: "0, 0, 255"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  includes:
+    - wordclock.h
+  project:
+    name: julesakt.wordclock
+    version: "0.1.0"
+
+rp2:
+  board: rpipico2w
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    encryption: {}  # uses the api key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot if the clock can't join the network.
+  ap:
+    ssid: ${friendly_name} Fallback
+
+captive_portal:
+
+safe_mode:
+
+time:
+  # Home Assistant supplies the time zone (no timezone set here on purpose),
+  # so daylight saving follows HA. SNTP keeps time if HA is unavailable.
+  - platform: homeassistant
+    id: clock_time
+  - platform: sntp
+
+globals:
+  # Last clock effect chosen, so the clock face comes back after turn-off.
+  - id: clock_effect
+    type: uint32_t
+    restore_value: true
+    initial_value: "1"
+
+script:
+  # Turning the light off stops its effect, so it would come back on as a
+  # solid panel. Put the clock effect back whenever the light is on without
+  # one. Deferred so the triggering light call finishes first.
+  - id: ensure_clock_effect
+    mode: restart
+    then:
+      - delay: 1ms
+      - lambda: |-
+          auto *light = id(display);
+          if (!light->remote_values.is_on() || light->get_current_effect_index() != 0)
+            return;
+          auto call = light->turn_on();
+          call.set_effect(id(clock_effect));
+          call.perform();
+
+light:
+  - platform: rp2040_pio_led_strip
+    id: display
+    name: Display
+    icon: mdi:clock-digital
+    pin: ${led_pin}
+    num_leds: 64
+    pio: 0
+    channel_colors: GRB
+    chipset: WS2812B
+    restore_mode: RESTORE_DEFAULT_ON
+    # A fade would run with the effect stopped, fading a solid panel.
+    default_transition_length: 0s
+    on_state:
+      - lambda: |-
+          uint32_t effect = id(display)->get_current_effect_index();
+          if (effect != 0)
+            id(clock_effect) = effect;
+      - script.execute: ensure_clock_effect
+    effects:
+      - addressable_lambda:
+          name: Word Clock
+          update_interval: 1s
+          lambda: |-
+            auto now = id(clock_time).now();
+            for (int i = 0; i < it.size(); i++) {
+              bool lit = now.is_valid() ? wordclock::compose(now.hour, now.minute).lit(i)
+                                        : wordclock::mask_bit(wordclock::kWifi, i);
+              it[i] = lit ? current_color : Color::BLACK;
+            }
+      - addressable_lambda:
+          name: Colour per Word
+          update_interval: 1s
+          lambda: |-
+            auto now = id(clock_time).now();
+            if (!now.is_valid()) {
+              for (int i = 0; i < it.size(); i++)
+                it[i] = wordclock::mask_bit(wordclock::kWifi, i) ? current_color : Color::BLACK;
+              return;
+            }
+            auto face = wordclock::compose(now.hour, now.minute);
+            for (int i = 0; i < it.size(); i++) {
+              switch (face.part(i)) {
+                case wordclock::Part::HOUR: it[i] = Color(${hour_color}); break;
+                case wordclock::Part::MINUTE: it[i] = Color(${minute_color}); break;
+                case wordclock::Part::PAST_TO: it[i] = Color(${past_to_color}); break;
+                default: it[i] = Color::BLACK;
+              }
+            }
+      - addressable_lambda:
+          name: Rainbow
+          update_interval: 1s
+          lambda: |-
+            auto now = id(clock_time).now();
+            auto face = wordclock::compose(now.hour, now.minute);
+            for (int i = 0; i < it.size(); i++) {
+              bool lit = now.is_valid() ? face.lit(i) : wordclock::mask_bit(wordclock::kWifi, i);
+              auto c = wordclock::rainbow(i);
+              it[i] = lit ? Color(c.r, c.g, c.b) : Color::BLACK;
+            }
+      - addressable_lambda:
+          name: Rainbow Cycle
+          update_interval: 50ms
+          lambda: |-
+            static uint8_t offset = 0;
+            offset++;
+            auto now = id(clock_time).now();
+            auto face = wordclock::compose(now.hour, now.minute);
+            for (int i = 0; i < it.size(); i++) {
+              bool lit = now.is_valid() ? face.lit(i) : wordclock::mask_bit(wordclock::kWifi, i);
+              auto c = wordclock::rainbow(i, offset);
+              it[i] = lit ? Color(c.r, c.g, c.b) : Color::BLACK;
+            }
+
+sensor:
+  - platform: wifi_signal
+    name: WiFi Signal
+    update_interval: 60s
+  - platform: uptime
+    name: Uptime
+  - platform: internal_temperature
+    name: Internal Temperature
+
+text_sensor:
+  - platform: version
+    name: ESPHome Version
+    hide_timestamp: true
+  - platform: wifi_info
+    ip_address:
+      name: IP Address
+    ssid:
+      name: WiFi SSID
+    mac_address:
+      name: MAC Address
+  - platform: template
+    name: UTC Offset
+    icon: mdi:map-clock
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      if (!id(clock_time).now().is_valid())
+        return {};
+      int32_t offset = ESPTime::timezone_offset() / 60;
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%c%02d:%02d", offset < 0 ? '-' : '+', abs(offset) / 60, abs(offset) % 60);
+      return std::string(buf);
+
+button:
+  - platform: restart
+    name: Restart
+  - platform: safe_mode
+    name: Safe Mode Boot
